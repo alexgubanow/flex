@@ -56,7 +56,6 @@ dnl as fallback. (autopoint will ignore latter if former is specified.)
 dnl
 dnl Bugs in gettext before 0.14 prevent building flex with it.
 dnl FLEX_GNU_GETTEXT_REAL_REQUIRE_VERSION=0.14
-AM_GNU_GETTEXT_REQUIRE_VERSION([0.19.6])
 AM_GNU_GETTEXT_VERSION([0.19.6])
 AC_PROG_YACC
   AC_MSG_CHECKING(whether $YACC is GNU Bison)
