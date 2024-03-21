@@ -63,12 +63,6 @@ dnl  flex code (hence the name "_shared").
 #define YYTBL_MAGIC 0xF13C57B1
 #endif
 
-/** Calculate (0-7) = number bytes needed to pad n to next 64-bit boundary. */
-#ifndef yypad64
-#define yypad64(n) ((8-((n)%8))%8)
-#endif
-
-
 #ifndef YYTABLES_TYPES
 #define YYTABLES_TYPES
 /** Possible values for td_id field. Each one corresponds to a
@@ -134,11 +128,11 @@ struct yytbl_data {
 #endif
 
 #ifdef FLEX_SCANNER
-%not-for-header
+m4_ifdef( [[M4_YY_NOT_IN_HEADER]],[[
 #endif
 yyskel_static flex_int32_t yytbl_calc_total_len (const struct yytbl_data *tbl);
 #ifdef FLEX_SCANNER
-%ok-for-header
+]])
 #endif
 
 /* vim:set noexpandtab cindent tabstop=8 softtabstop=0 shiftwidth=8 textwidth=0: */

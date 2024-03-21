@@ -33,7 +33,7 @@
 
 #include "options.h"
 
-/* Be sure to synchronize these options with those defined in "options.h",
+/* Be sure to synchronize these options with those defined in "ctrl.h",
  * the giant switch() statement in "main.c", and the %option processing in
  * "scan.l".
  */
@@ -62,6 +62,8 @@ optspec_t flexopts[] = {
 	,
 	{"--backup", OPT_BACKUP, 0}
 	,			/* Generate backing-up information to lex.backup. */
+	{"--backup-file=FILE", OPT_BACKUP_FILE, 0}
+	,			/* Generate backing-up information to FILE. */
 	{"-B", OPT_BATCH, 0}
 	,
 	{"--batch", OPT_BATCH, 0}
@@ -98,7 +100,11 @@ optspec_t flexopts[] = {
 	{"-n", OPT_DONOTHING, 0}
 	,			/* For POSIX lex compatibility. */
 	{"--ecs", OPT_ECS, 0}
-	,			/* Construct equivalence classes. */
+	,
+	{"--emit=LANG", OPT_EMIT, 0}
+	,			/* select language to emit */
+	{"-e LANG", OPT_EMIT, 0}
+	,
 	{"--noecs", OPT_NO_ECS, 0}
 	,
 	{"-F", OPT_FAST, 0}
@@ -229,7 +235,13 @@ optspec_t flexopts[] = {
 	{"--yywrap", OPT_YYWRAP, 0}
 	,
 
-	{"--nounput", OPT_NO_UNPUT, 0}
+	{"--noinput", OPT_NO_YYINPUT, 0}
+	,
+	{"--noyyinput", OPT_NO_YYINPUT, 0}
+	,
+	{"--nounput", OPT_NO_YYUNPUT, 0}
+	,
+	{"--noyyunput", OPT_NO_YYUNPUT, 0}
 	,
 	{"--noyy_push_state", OPT_NO_YY_PUSH_STATE, 0}
 	,
@@ -255,6 +267,10 @@ optspec_t flexopts[] = {
 	,
 	{"--noyyset_lineno", OPT_NO_YYSET_LINENO, 0}
 	,
+	{"--noyyget_column", OPT_NO_YYGET_COLUMN, 0}
+	,
+	{"--noyyset_column", OPT_NO_YYSET_COLUMN, 0}
+	,
 	{"--noyyget_in", OPT_NO_YYGET_IN, 0}
 	,
 	{"--noyyset_in", OPT_NO_YYSET_IN, 0}
@@ -270,6 +286,10 @@ optspec_t flexopts[] = {
 	{"--noyyget_lloc", OPT_NO_YYGET_LLOC, 0}
 	,
 	{"--noyyset_lloc", OPT_NO_YYSET_LLOC, 0}
+	,
+	{"--noyyget_debug", OPT_NO_YYGET_DEBUG, 0}
+	,
+	{"--noyyset_debug", OPT_NO_YYSET_DEBUG, 0}
 	,
         {"--unsafe-no-m4-sect3-escape", OPT_NO_SECT3_ESCAPE, 0}
         ,

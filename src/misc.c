@@ -33,98 +33,20 @@
 #include "flexdef.h"
 #include "tables.h"
 
-#define CMD_IF_TABLES_SER    "%if-tables-serialization"
-#define CMD_TABLES_YYDMAP    "%tables-yydmap"
-#define CMD_DEFINE_YYTABLES  "%define-yytables"
-#define CMD_IF_CPP_ONLY      "%if-c++-only"
-#define CMD_IF_C_ONLY        "%if-c-only"
-#define CMD_IF_C_OR_CPP      "%if-c-or-c++"
-#define CMD_NOT_FOR_HEADER   "%not-for-header"
-#define CMD_OK_FOR_HEADER    "%ok-for-header"
-#define CMD_PUSH             "%push"
-#define CMD_POP              "%pop"
-#define CMD_IF_REENTRANT     "%if-reentrant"
-#define CMD_IF_NOT_REENTRANT "%if-not-reentrant"
-#define CMD_IF_BISON_BRIDGE  "%if-bison-bridge"
-#define CMD_IF_NOT_BISON_BRIDGE  "%if-not-bison-bridge"
-#define CMD_ENDIF            "%endif"
-
-/* we allow the skeleton to push and pop. */
-struct sko_state {
-    bool dc; /**< do_copy */
-};
-static struct sko_state *sko_stack=0;
-static int sko_len=0,sko_sz=0;
-static void sko_push(bool dc)
-{
-    if(!sko_stack){
-        sko_sz = 1;
-        sko_stack = malloc(sizeof(struct sko_state) * (size_t) sko_sz);
-        if (!sko_stack)
-            flexfatal(_("allocation of sko_stack failed"));
-        sko_len = 0;
-    }
-    if(sko_len >= sko_sz){
-        sko_sz *= 2;
-        sko_stack = realloc(sko_stack,
-			sizeof(struct sko_state) * (size_t) sko_sz);
-    }
-    
-    /* initialize to zero and push */
-    sko_stack[sko_len].dc = dc;
-    sko_len++;
-}
-static void sko_peek(bool *dc)
-{
-    if(sko_len <= 0)
-        flex_die("peek attempt when sko stack is empty");
-    if(dc)
-        *dc = sko_stack[sko_len-1].dc;
-}
-static void sko_pop(bool* dc)
-{
-    sko_peek(dc);
-    sko_len--;
-    if(sko_len < 0)
-        flex_die("popped too many times in skeleton.");
-}
-
-/* Append "#define defname value\n" to the running buffer. */
-void action_define (const char *defname, int value)
-{
-	char    buf[MAXLINE];
-	char   *cpy;
-
-	if ((int) strlen (defname) > MAXLINE / 2) {
-		format_pinpoint_message (_
-					 ("name \"%s\" ridiculously long"),
-					 defname);
-		return;
-	}
-
-	snprintf (buf, sizeof(buf), "#define %s %d\n", defname, value);
-	add_action (buf);
-
-	/* track #defines so we can undef them when we're done. */
-	cpy = xstrdup(defname);
-	buf_append (&defs_buf, &cpy, 1);
-}
-
 /* Append "new_text" to the running buffer. */
 void add_action (const char *new_text)
 {
 	int     len = (int) strlen (new_text);
 
 	while (len + action_index >= action_size - 10 /* slop */ ) {
-		int     new_size = action_size * 2;
 
-		if (new_size <= 0)
+		if (action_size > INT_MAX / 2)
 			/* Increase just a little, to try to avoid overflow
 			 * on 16-bit machines.
 			 */
 			action_size += action_size / 8;
 		else
-			action_size = new_size;
+			action_size = action_size * 2;
 
 		action_array =
 			reallocate_character_array (action_array,
@@ -141,20 +63,24 @@ void add_action (const char *new_text)
 
 void   *allocate_array (int size, size_t element_size)
 {
-	void *mem;
-#if HAVE_REALLOCARRAY
-	/* reallocarray has built-in overflow detection */
-	mem = reallocarray(NULL, (size_t) size, element_size);
+	void *new_array;
+#if HAVE_REALLOCARR
+	new_array = NULL;
+	if (reallocarr(&new_array, (size_t) size, element_size))
+		flexfatal (_("memory allocation failed in allocate_array()"));
 #else
+# if HAVE_REALLOCARRAY
+	new_array = reallocarray(NULL, (size_t) size, element_size);
+# else
+	/* Do manual overflow detection */
 	size_t num_bytes = (size_t) size * element_size;
-	mem = (size && SIZE_MAX / (size_t) size < element_size) ? NULL :
+	new_array = (size && SIZE_MAX / (size_t) size < element_size) ? NULL :
 		malloc(num_bytes);
+# endif
+	if (!new_array)
+		flexfatal (_("memory allocation failed in allocate_array()"));
 #endif
-	if (!mem)
-		flexfatal (_
-			   ("memory allocation failed in allocate_array()"));
-
-	return mem;
+	return new_array;
 }
 
 
@@ -205,7 +131,7 @@ void check_char (int c)
 		lerr (_("bad character '%s' detected in check_char()"),
 			readable_form (c));
 
-	if (c >= csize)
+	if (c >= ctrl.csize)
 		lerr (_
 			("scanner requires -8 flag to use the character %s"),
 			readable_form (c));
@@ -236,19 +162,19 @@ char *xstrdup(const char *s)
 
 int cclcmp (const void *a, const void *b)
 {
-  if (!*(const unsigned char *) a)
-	return 1;
-  else
-	if (!*(const unsigned char *) b)
-	  return - 1;
+	if (!*(const unsigned char *) a)
+		return 1;
 	else
-	  return *(const unsigned char *) a - *(const unsigned char *) b;
+		if (!*(const unsigned char *) b)
+			return - 1;
+		else
+			return *(const unsigned char *) a - *(const unsigned char *) b;
 }
 
 
 /* dataend - finish up a block of data declarations */
 
-void dataend (void)
+void dataend (const char *endit)
 {
 	/* short circuit any output */
 	if (gentables) {
@@ -257,7 +183,8 @@ void dataend (void)
 			dataflush ();
 
 		/* add terminator for initialization; { for vi */
-		outn ("    } ;\n");
+		if (endit)
+		    outn (endit);
 	}
 	dataline = 0;
 	datapos = 0;
@@ -272,7 +199,8 @@ void dataflush (void)
 	if (!gentables)
 		return;
 
-	outc ('\n');
+	if (datapos > 0)
+		outc ('\n');
 
 	if (++dataline >= NUMDATALINES) {
 		/* Put out a blank line so that the table is grouped into
@@ -334,21 +262,20 @@ void lerr_fatal (const char *msg, ...)
 }
 
 
-/* line_directive_out - spit out a "#line" statement */
-
-void line_directive_out (FILE *output_file, int do_infile)
+/* line_directive_out - spit out a "#line" statement or equivalent */
+void line_directive_out (FILE *output_file, char *path, int linenum)
 {
-	char    directive[MAXLINE], filename[MAXLINE];
+	char	*trace_fmt = "m4_ifdef([[M4_HOOK_TRACE_LINE_FORMAT]], [[M4_HOOK_TRACE_LINE_FORMAT([[%d]], [[%s]])]])";
+	char    directive[MAXLINE*2], filename[MAXLINE];
 	char   *s1, *s2, *s3;
-	static const char line_fmt[] = "#line %d \"%s\"\n";
 
-	if (!gen_line_dirs)
+	if (!ctrl.gen_line_dirs)
 		return;
 
-	s1 = do_infile ? infilename : "M4_YY_OUTFILE_NAME";
+	s1 = (path != NULL) ? path : "M4_YY_OUTFILE_NAME";
 
-	if (do_infile && !s1)
-        s1 = "<stdin>";
+	if ((path != NULL) && !s1)
+		s1 = "<stdin>";
     
 	s2 = filename;
 	s3 = &filename[sizeof (filename) - 2];
@@ -363,10 +290,10 @@ void line_directive_out (FILE *output_file, int do_infile)
 
 	*s2 = '\0';
 
-	if (do_infile)
-		snprintf (directive, sizeof(directive), line_fmt, linenum, filename);
+	if (path != NULL)
+		snprintf (directive, sizeof(directive), trace_fmt, linenum, filename);
 	else {
-		snprintf (directive, sizeof(directive), line_fmt, 0, filename);
+		snprintf (directive, sizeof(directive), trace_fmt, 0, filename);
 	}
 
 	/* If output_file is nil then we should put the directive in
@@ -450,7 +377,7 @@ void mkdata (int value)
 
 	if (datapos == 0)
 		/* Indent. */
-		out ("    ");
+		out ("     ");
 	else
 		outc (',');
 
@@ -547,7 +474,7 @@ unsigned char myesc (unsigned char array[])
 }
 
 
-/* out - various flavors of outputing a (possibly formatted) string for the
+/* out - various flavors of outputting a (possibly formatted) string for the
  *	 generated scanner, keeping track of the line count.
  */
 
@@ -574,11 +501,6 @@ void out_hex (const char *fmt, unsigned int x)
 void out_str (const char *fmt, const char str[])
 {
 	fprintf (stdout,fmt, str);
-}
-
-void out_str3 (const char *fmt, const char s1[], const char s2[], const char s3[])
-{
-	fprintf (stdout,fmt, s1, s2, s3);
 }
 
 void out_str_dec (const char *fmt, const char str[], int n)
@@ -634,7 +556,7 @@ char   *readable_form (int c)
 		case '\v':
 			return "\\v";
 		default:
-			if(trace_hex)
+			if(env.trace_hex)
 				snprintf (rform, sizeof(rform), "\\x%.2x", (unsigned int) c);
 			else
 				snprintf (rform, sizeof(rform), "\\%.3o", (unsigned int) c);
@@ -659,146 +581,23 @@ char   *readable_form (int c)
 void   *reallocate_array (void *array, int size, size_t element_size)
 {
 	void *new_array;
-#if HAVE_REALLOCARRAY
-	/* reallocarray has built-in overflow detection */
-	new_array = reallocarray(array, (size_t) size, element_size);
+#if HAVE_REALLOCARR
+	new_array = array;
+	if (reallocarr(&new_array, (size_t) size, element_size))
+		flexfatal (_("attempt to increase array size failed"));
 #else
+# if HAVE_REALLOCARRAY
+	new_array = reallocarray(array, (size_t) size, element_size);
+# else
+	/* Do manual overflow detection */
 	size_t num_bytes = (size_t) size * element_size;
 	new_array = (size && SIZE_MAX / (size_t) size < element_size) ? NULL :
 		realloc(array, num_bytes);
-#endif
+# endif
 	if (!new_array)
 		flexfatal (_("attempt to increase array size failed"));
-
+#endif
 	return new_array;
-}
-
-
-/* skelout - write out one section of the skeleton file
- *
- * Description
- *    Copies skelfile or skel array to stdout until a line beginning with
- *    "%%" or EOF is found.
- */
-void skelout (void)
-{
-	char    buf_storage[MAXLINE];
-	char   *buf = buf_storage;
-	bool   do_copy = true;
-
-    /* "reset" the state by clearing the buffer and pushing a '1' */
-    if(sko_len > 0)
-        sko_peek(&do_copy);
-    sko_len = 0;
-    sko_push(do_copy=true);
-
-
-	/* Loop pulling lines either from the skelfile, if we're using
-	 * one, or from the skel[] array.
-	 */
-	while (skelfile ?
-	       (fgets (buf, MAXLINE, skelfile) != NULL) :
-	       ((buf = (char *) skel[skel_ind++]) != 0)) {
-
-		if (skelfile)
-			chomp (buf);
-
-		/* copy from skel array */
-		if (buf[0] == '%') {	/* control line */
-			/* print the control line as a comment. */
-			if (ddebug && buf[1] != '#') {
-				if (buf[strlen (buf) - 1] == '\\')
-					out_str ("/* %s */\\\n", buf);
-				else
-					out_str ("/* %s */\n", buf);
-			}
-
-			/* We've been accused of using cryptic markers in the skel.
-			 * So we'll use emacs-style-hyphenated-commands.
-             * We might consider a hash if this if-else-if-else
-             * chain gets too large.
-			 */
-#define cmd_match(s) (strncmp(buf,(s),strlen(s))==0)
-
-			if (buf[1] == '%') {
-				/* %% is a break point for skelout() */
-				return;
-			}
-            else if (cmd_match (CMD_PUSH)){
-                sko_push(do_copy);
-                if(ddebug){
-                    out_str("/*(state = (%s) */",do_copy?"true":"false");
-                }
-                out_str("%s\n", buf[strlen (buf) - 1] =='\\' ? "\\" : "");
-            }
-            else if (cmd_match (CMD_POP)){
-                sko_pop(&do_copy);
-                if(ddebug){
-                    out_str("/*(state = (%s) */",do_copy?"true":"false");
-                }
-                out_str("%s\n", buf[strlen (buf) - 1] =='\\' ? "\\" : "");
-            }
-            else if (cmd_match (CMD_IF_REENTRANT)){
-                sko_push(do_copy);
-                do_copy = reentrant && do_copy;
-            }
-            else if (cmd_match (CMD_IF_NOT_REENTRANT)){
-                sko_push(do_copy);
-                do_copy = !reentrant && do_copy;
-            }
-            else if (cmd_match(CMD_IF_BISON_BRIDGE)){
-                sko_push(do_copy);
-                do_copy = bison_bridge_lval && do_copy;
-            }
-            else if (cmd_match(CMD_IF_NOT_BISON_BRIDGE)){
-                sko_push(do_copy);
-                do_copy = !bison_bridge_lval && do_copy;
-            }
-            else if (cmd_match (CMD_ENDIF)){
-                sko_pop(&do_copy);
-            }
-			else if (cmd_match (CMD_IF_TABLES_SER)) {
-                do_copy = do_copy && tablesext;
-			}
-			else if (cmd_match (CMD_TABLES_YYDMAP)) {
-				if (tablesext && yydmap_buf.elts)
-					outn ((char *) (yydmap_buf.elts));
-			}
-            else if (cmd_match (CMD_DEFINE_YYTABLES)) {
-                out_str("#define YYTABLES_NAME \"%s\"\n",
-                        tablesname?tablesname:"yytables");
-            }
-			else if (cmd_match (CMD_IF_CPP_ONLY)) {
-				/* only for C++ */
-                sko_push(do_copy);
-				do_copy = C_plus_plus;
-			}
-			else if (cmd_match (CMD_IF_C_ONLY)) {
-				/* %- only for C */
-                sko_push(do_copy);
-				do_copy = !C_plus_plus;
-			}
-			else if (cmd_match (CMD_IF_C_OR_CPP)) {
-				/* %* for C and C++ */
-                sko_push(do_copy);
-				do_copy = true;
-			}
-			else if (cmd_match (CMD_NOT_FOR_HEADER)) {
-				/* %c begin linkage-only (non-header) code. */
-				OUT_BEGIN_CODE ();
-			}
-			else if (cmd_match (CMD_OK_FOR_HEADER)) {
-				/* %e end linkage-only code. */
-				OUT_END_CODE ();
-			}
-			else {
-				flexfatal (_("bad line in skeleton file"));
-			}
-		}
-
-		else if (do_copy) 
-            outn (buf);
-	}			/* end while */
 }
 
 
@@ -815,7 +614,8 @@ void transition_struct_out (int element_v, int element_n)
 	if (!gentables)
 		return;
 
-	out_dec2 (" {%4d,%4d },", element_v, element_n);
+	out_dec2 ("M4_HOOK_TABLE_OPENER[[%4d]],[[%4d]]M4_HOOK_TABLE_CONTINUE", element_v, element_n);
+	outc ('\n');
 
 	datapos += TRANS_STRUCT_PRINT_LENGTH;
 
@@ -868,3 +668,20 @@ char   *chomp (char *str)
 		*p-- = 0;
 	return str;
 }
+
+void comment(const char *txt)
+{
+	char buf[MAXLINE];
+	bool eol;
+
+	strncpy(buf, txt, MAXLINE-1);
+	eol = buf[strlen(buf)-1] == '\n';
+
+	if (eol)
+		buf[strlen(buf)-1] = '\0';
+	out_str("M4_HOOK_COMMENT_OPEN [[%s]] M4_HOOK_COMMENT_CLOSE", buf);
+	if (eol)
+		outc ('\n');
+}
+
+

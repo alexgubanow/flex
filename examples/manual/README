@@ -10,3 +10,9 @@ To build the programs individually, type
 For example:
 
    make -f Makefile.examples expr
+
+If you add an example to this directory, don't forget these steps:
+
+* Add it to the EXTRA_DIST list in Makefile.am
+
+* Add a build recipe to Makefile/examples.

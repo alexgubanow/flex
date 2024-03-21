@@ -24,22 +24,17 @@
 #include "flexdef.h"
 
 
-static const char* REGEXP_LINEDIR = "^#line ([[:digit:]]+) \"(.*)\"";
-static const char* REGEXP_BLANK_LINE = "^[[:space:]]*$";
-
 regex_t regex_linedir; /**< matches line directives */
-regex_t regex_blank_line; /**< matches blank lines */
 
 
 /** Initialize the regular expressions.
  * @return true upon success.
  */
-bool flex_init_regex(void)
+bool flex_init_regex(const char *traceline_re)
 {
-    flex_regcomp(&regex_linedir, REGEXP_LINEDIR, REG_EXTENDED);
-    flex_regcomp(&regex_blank_line, REGEXP_BLANK_LINE, REG_EXTENDED);
-
-    return true;
+	if (traceline_re != NULL)
+		flex_regcomp(&regex_linedir, traceline_re, REG_EXTENDED);
+	return true;
 }
 
 /** Compiles a regular expression or dies trying.
@@ -49,7 +44,7 @@ bool flex_init_regex(void)
  */
 void flex_regcomp(regex_t *preg, const char *regex, int cflags)
 {
-    int err;
+	int err;
 
 	memset (preg, 0, sizeof (regex_t));
 
@@ -104,7 +99,7 @@ char   *regmatch_cpy (regmatch_t * m, char *dest, const char *src)
 	}
 
 	snprintf (dest, (size_t) regmatch_len(m), "%s", src + m->rm_so);
-    return dest;
+	return dest;
 }
 
 /** Get the length in characters of the match.

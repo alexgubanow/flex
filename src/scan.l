@@ -1,5 +1,11 @@
 /* scan.l - scanner for flex input -*-C-*- */
 
+%top{
+/* flexdef.h includes config.h, which may contain macros that alter the API */
+/* of libc functions. Must include first before any libc header. */
+#include "flexdef.h"
+}
+
 %{
 /*  Copyright (c) 1990 The Regents of the University of California. */
 /*  All rights reserved. */
@@ -32,7 +38,6 @@
 /*  WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR */
 /*  PURPOSE. */
 
-#include "flexdef.h"
 #include "parse.h"
 extern bool tablesverify, tablesext;
 extern int trlcontxt; /* Set in  parse.y for each rule. */
@@ -45,22 +50,8 @@ extern const char *escaped_qstart, *escaped_qend;
 #define ESCAPED_QEND M4QEND "]" M4QSTART M4QEND "]" M4QSTART
 
 #define ACTION_ECHO add_action( yytext )
-#define ACTION_IFDEF(def, should_define) \
-	{ \
-	if ( should_define ) \
-		action_define( def, 1 ); \
-	}
-
 #define ACTION_ECHO_QSTART add_action (ESCAPED_QSTART)
 #define ACTION_ECHO_QEND   add_action (ESCAPED_QEND)
-
-#define ACTION_M4_IFDEF(def, should_define) \
-    do{ \
-        if ( should_define ) \
-            buf_m4_define( &m4defs_buf, def, NULL);\
-        else \
-            buf_m4_undefine( &m4defs_buf, def);\
-    } while(0)
 
 #define MARK_END_OF_PROLOG mark_prolog();
 
@@ -93,19 +84,19 @@ extern const char *escaped_qstart, *escaped_qend;
 	if ( all_upper( str ) ) \
 		reject = true;
 
-#define CHECK_YYMORE(str) \
+#define CHECK_YYREJECT(str) \
 	if ( all_lower( str ) ) \
-		yymore_used = true;
+		reject = true;
 
 #define YY_USER_INIT \
 	if ( getenv("POSIXLY_CORRECT") ) \
-		posix_compat = true;
+		ctrl.posix_compat = true;
 
 #define START_CODEBLOCK(x) do { \
     /* Emit the needed line directive... */\
     if (indented_code == false) { \
-        linenum++; \
-        line_directive_out(NULL, 1); \
+        if (!x) linenum++; \
+        line_directive_out(NULL, infilename, linenum);	\
     } \
     add_action(M4QSTART); \
     yy_push_state(CODEBLOCK); \
@@ -115,7 +106,7 @@ extern const char *escaped_qstart, *escaped_qend;
 #define END_CODEBLOCK do { \
     yy_pop_state();\
     add_action(M4QEND); \
-    if (!indented_code) line_directive_out(NULL, 0);\
+    if (!indented_code) line_directive_out(NULL, NULL, linenum);	\
 } while (0)
 
 %}
@@ -155,6 +146,13 @@ LEXOPT		[aceknopr]
 M4QSTART    "[""["
 M4QEND      "]""]"
 
+FUNARGS     [^)]*
+
+%{
+void context_call(char *);
+void context_member(char *, const char *);
+#undef yyreject
+%}
 %%
 	static int bracelevel, didadef, indented_code;
 	static int doing_rule_action = false;
@@ -173,9 +171,13 @@ M4QEND      "]""]"
 	^"%x"{NAME}?	return XSCDECL;
 	^"%{".*{NL}	START_CODEBLOCK(false);
     ^"%top"[[:blank:]]*"{"[[:blank:]]*{NL}    {
+		char trampoline[512];
                 brace_start_line = linenum;
                 ++linenum;
-                buf_linedir( &top_buf, infilename?infilename:"<stdin>", linenum);
+		snprintf(trampoline, sizeof(trampoline),
+			 "M4_HOOK_TRACE_LINE_FORMAT(%d, [[%s]])",
+			 linenum, infilename?infilename:"<stdin>");
+                buf_strappend(&top_buf, trampoline);
                 brace_depth = 1;
                 yy_push_state(CODEBLOCK_MATCH_BRACE);
             }
@@ -188,13 +190,13 @@ M4QEND      "]""]"
 			sectnum = 2;
 			bracelevel = 0;
 			mark_defs1();
-			line_directive_out(NULL, 1);
+			line_directive_out(NULL, infilename, linenum);
 			BEGIN(SECT2PROLOG);
 			return SECTEND;
 			}
 
-	^"%pointer".*{NL}	yytext_is_array = false; ++linenum;
-	^"%array".*{NL}		yytext_is_array = true; ++linenum;
+	^"%pointer".*{NL}	ctrl.yytext_is_array = false; ++linenum;
+	^"%array".*{NL}		ctrl.yytext_is_array = true; ++linenum;
 
 	^"%option"	BEGIN(OPTION); return TOK_OPTION;
 
@@ -256,7 +258,7 @@ M4QEND      "]""]"
 	\n		yy_pop_state();
 	[[:digit:]]+	linenum = myctoi( yytext );
 
-	\"[^"\n]*\"	{
+	"\""[^""\n]*"\""	{
 			free(infilename);
 			infilename = xstrdup(yytext + 1);
 			infilename[strlen( infilename ) - 1] = '\0';
@@ -307,7 +309,7 @@ M4QEND      "]""]"
     <<EOF>>     {
                 linenum = brace_start_line;
                 synerr(_("Unmatched '{'"));
-                yyterminate();
+                return YY_NULL;
                 }
 }
 
@@ -351,103 +353,120 @@ M4QEND      "]""]"
 	{WS}		option_sense = true;
 
 	"="		return '=';
+	[[:digit:]]+	{nmval = atoi(yytext); return TOK_NUMERIC;}
 
 	no		option_sense = ! option_sense;
 
-	7bit		csize = option_sense ? 128 : 256;
-	8bit		csize = option_sense ? 256 : 128;
+	7bit		ctrl.csize = option_sense ? 128 : 256;
+	8bit		ctrl.csize = option_sense ? 256 : 128;
 
-	align		long_align = option_sense;
+	align		ctrl.long_align = option_sense;
 	always-interactive	{
-			ACTION_M4_IFDEF( "M4""_YY_ALWAYS_INTERACTIVE", option_sense );
-            interactive = option_sense;
+			ctrl.always_interactive = option_sense;
+			ctrl.interactive = (trit)option_sense;
 			}
-	array		yytext_is_array = option_sense;
-	backup		backing_up_report = option_sense;
-	batch		interactive = ! option_sense;
-    bison-bridge     bison_bridge_lval = option_sense;
-    bison-locations  { if((bison_bridge_lloc = option_sense))
-                            bison_bridge_lval = true;
-                     }
-	"c++"		C_plus_plus = option_sense;
+	array		ctrl.yytext_is_array = option_sense;
+	backup		env.backing_up_report = option_sense;
+	batch		ctrl.interactive = (trit)!option_sense;
+	bison-bridge     ctrl.bison_bridge_lval = option_sense;
+	bison-locations  { if((ctrl.bison_bridge_lloc = option_sense))
+                            ctrl.bison_bridge_lval = true;
+			}
+	"c++"		ctrl.C_plus_plus = option_sense;
 	caseful|case-sensitive		sf_set_case_ins(!option_sense);
 	caseless|case-insensitive	sf_set_case_ins(option_sense);
-	debug		ddebug = option_sense;
-	default		spprdflt = ! option_sense;
-	ecs		useecs = option_sense;
+	debug		ctrl.ddebug = option_sense;
+	default		ctrl.spprdflt = ! option_sense;
+	ecs		ctrl.useecs = option_sense;
 	fast		{
-			useecs = usemecs = false;
-			use_read = fullspd = true;
+			ctrl.useecs = ctrl.usemecs = false;
+			ctrl.use_read = ctrl.fullspd = true;
 			}
 	full		{
-			useecs = usemecs = false;
-			use_read = fulltbl = true;
+			ctrl.useecs = ctrl.usemecs = false;
+			ctrl.use_read = ctrl.fulltbl = true;
 			}
-	input		ACTION_IFDEF("YY_NO_INPUT", ! option_sense);
-	interactive	interactive = option_sense;
-	lex-compat	lex_compat = option_sense;
-	posix-compat	posix_compat = option_sense;
-	line		gen_line_dirs = option_sense;
+	input		ctrl.no_yyinput = ! option_sense;
+	yyinput		ctrl.no_yyinput = ! option_sense;
+	interactive	ctrl.interactive = (trit)option_sense;
+	lex-compat	ctrl.lex_compat = option_sense;
+	posix-compat	ctrl.posix_compat = option_sense;
+	line		ctrl.gen_line_dirs = option_sense;
 	main		{
-			ACTION_M4_IFDEF( "M4""_YY_MAIN", option_sense);
-            /* Override yywrap */
-            if( option_sense == true )
-                do_yywrap = false;
+			ctrl.do_main = option_sense;
+			/* Override yywrap */
+			if( option_sense == true )
+                		ctrl.do_yywrap = false;
 			}
-	meta-ecs	usemecs = option_sense;
+	meta-ecs	ctrl.usemecs = option_sense;
 	never-interactive	{
-			ACTION_M4_IFDEF( "M4""_YY_NEVER_INTERACTIVE", option_sense );
-            interactive = !option_sense;
+			ctrl.never_interactive = option_sense;
+            		ctrl.interactive = (trit)!option_sense;
 			}
-	perf-report	performance_report += option_sense ? 1 : -1;
-	pointer		yytext_is_array = ! option_sense;
-	read		use_read = option_sense;
-    reentrant   reentrant = option_sense;
-	reject		reject_really_used = option_sense;
-	stack		ACTION_M4_IFDEF( "M4""_YY_STACK_USED", option_sense );
-	stdinit		do_stdinit = option_sense;
-	stdout		use_stdout = option_sense;
-    unistd      ACTION_IFDEF("YY_NO_UNISTD_H", ! option_sense);
-	unput		ACTION_M4_IFDEF("M4""_YY_NO_UNPUT", ! option_sense);
-	verbose		printstats = option_sense;
-	warn		nowarn = ! option_sense;
-	yylineno	do_yylineno = option_sense; ACTION_M4_IFDEF("M4""_YY_USE_LINENO", option_sense);
-	yymore		yymore_really_used = option_sense;
-	yywrap      do_yywrap = option_sense;
+	perf-report	env.performance_hint += option_sense ? 1 : -1;
+	pointer		ctrl.yytext_is_array = ! option_sense;
+	read		ctrl.use_read = option_sense;
+	reentrant	ctrl.reentrant = option_sense;
+	reject		ctrl.reject_really_used = option_sense;
+	rewrite		ctrl.rewrite = option_sense;
+	stack		ctrl.stack_used = option_sense;
+	stdinit		ctrl.do_stdinit = option_sense;
+	stdout		env.use_stdout = option_sense;
+	unistd		ctrl.no_unistd = ! option_sense;
+	unput		ctrl.no_yyunput = ! option_sense;
+	yyunput		ctrl.no_yyunput = ! option_sense;
+	verbose		env.printstats = option_sense;
+	warn		env.nowarn = ! option_sense;
+	yylineno	ctrl.do_yylineno = option_sense;
+	yymore		ctrl.yymore_really_used = option_sense;
+	yywrap		ctrl.do_yywrap = option_sense;
+	yyread		ctrl.noyyread = !option_sense;
 
-	yy_push_state	ACTION_M4_IFDEF("M4""_YY_NO_PUSH_STATE", ! option_sense);
-	yy_pop_state	ACTION_M4_IFDEF("M4""_YY_NO_POP_STATE", ! option_sense);
-	yy_top_state	ACTION_M4_IFDEF("M4""_YY_NO_TOP_STATE", ! option_sense);
+	yypanic		ctrl.no_yypanic = !option_sense;
 
-	yy_scan_buffer	ACTION_M4_IFDEF("M4""_YY_NO_SCAN_BUFFER", ! option_sense);
-	yy_scan_bytes	ACTION_M4_IFDEF("M4""_YY_NO_SCAN_BYTES", ! option_sense);
-	yy_scan_string	ACTION_M4_IFDEF("M4""_YY_NO_SCAN_STRING", ! option_sense);
+	yy_push_state	ctrl.no_yy_push_state = ! option_sense;
+	yy_pop_state	ctrl.no_yy_pop_state = ! option_sense;
+	yy_top_state	ctrl.no_yy_top_state = ! option_sense;
 
-    yyalloc         ACTION_M4_IFDEF("M4""_YY_NO_FLEX_ALLOC", ! option_sense);
-    yyrealloc       ACTION_M4_IFDEF("M4""_YY_NO_FLEX_REALLOC", ! option_sense);
-    yyfree          ACTION_M4_IFDEF("M4""_YY_NO_FLEX_FREE", ! option_sense);
+	yy_scan_buffer	ctrl.no_yy_scan_buffer = ! option_sense;
+	yy_scan_bytes	ctrl.no_yy_scan_bytes = ! option_sense;
+	yy_scan_string	ctrl.no_yy_scan_string = ! option_sense;
 
-    yyget_debug     ACTION_M4_IFDEF("M4""_YY_NO_GET_DEBUG", ! option_sense);
-    yyset_debug     ACTION_M4_IFDEF("M4""_YY_NO_SET_DEBUG", ! option_sense);
-    yyget_extra     ACTION_M4_IFDEF("M4""_YY_NO_GET_EXTRA", ! option_sense);
-    yyset_extra     ACTION_M4_IFDEF("M4""_YY_NO_SET_EXTRA", ! option_sense);
-    yyget_leng      ACTION_M4_IFDEF("M4""_YY_NO_GET_LENG", ! option_sense);
-    yyget_text      ACTION_M4_IFDEF("M4""_YY_NO_GET_TEXT", ! option_sense);
-    yyget_lineno    ACTION_M4_IFDEF("M4""_YY_NO_GET_LINENO", ! option_sense);
-    yyset_lineno    ACTION_M4_IFDEF("M4""_YY_NO_SET_LINENO", ! option_sense);
-    yyget_in        ACTION_M4_IFDEF("M4""_YY_NO_GET_IN", ! option_sense);
-    yyset_in        ACTION_M4_IFDEF("M4""_YY_NO_SET_IN", ! option_sense);
-    yyget_out       ACTION_M4_IFDEF("M4""_YY_NO_GET_OUT", ! option_sense);
-    yyset_out       ACTION_M4_IFDEF("M4""_YY_NO_SET_OUT", ! option_sense);
-    yyget_lval      ACTION_M4_IFDEF("M4""_YY_NO_GET_LVAL", ! option_sense);
-    yyset_lval      ACTION_M4_IFDEF("M4""_YY_NO_SET_LVAL", ! option_sense);
-    yyget_lloc      ACTION_M4_IFDEF("M4""_YY_NO_GET_LLOC", ! option_sense);
-    yyset_lloc      ACTION_M4_IFDEF("M4""_YY_NO_SET_LLOC", ! option_sense);
+	yyalloc         ctrl.no_flex_alloc = ! option_sense;
+	yyrealloc       ctrl.no_flex_realloc = ! option_sense;
+	yyfree          ctrl.no_flex_free = ! option_sense;
 
+	yyget_debug     ctrl.no_get_debug = ! option_sense;
+	yyset_debug     ctrl.no_set_debug = ! option_sense;
+	yyget_extra     ctrl.no_yyget_extra = ! option_sense;
+	yyset_extra     ctrl.no_yyset_extra = ! option_sense;
+	yyget_leng      ctrl.no_yyget_leng = ! option_sense;
+	yyget_text      ctrl.no_yyget_text = ! option_sense;
+	yyget_column    ctrl.no_yyget_column = ! option_sense;
+	yyset_column    ctrl.no_yyset_column = ! option_sense;
+	yyget_lineno    ctrl.no_yyget_lineno = ! option_sense;
+	yyset_lineno    ctrl.no_yyset_lineno = ! option_sense;
+	yyget_in        ctrl.no_yyget_in = ! option_sense;
+	yyset_in        ctrl.no_yyset_in = ! option_sense;
+	yyget_out       ctrl.no_yyget_out = ! option_sense;
+	yyset_out       ctrl.no_yyset_out = ! option_sense;
+	yyget_lval      ctrl.no_yyget_lval = ! option_sense;
+	yyset_lval      ctrl.no_yyset_lval = ! option_sense;
+	yyget_lloc      ctrl.no_yyget_lloc = ! option_sense;
+	yyset_lloc      ctrl.no_yyset_lloc = ! option_sense;
+
+	bufsize		return TOK_BUFSIZE;
+	emit		return TOK_EMIT;
 	extra-type	return TOK_EXTRA_TYPE;
 	outfile		return TOK_OUTFILE;
 	prefix		return TOK_PREFIX;
 	yyclass		return TOK_YYCLASS;
+	yylmax		return TOK_YYLMAX;
+	yydecl		return TOK_YYDECL;
+	yyterminate	return TOK_YYTERMINATE;
+	pre-action	return TOK_PREACTION;
+	post-action	return TOK_POSTACTION;
+	user-init	return TOK_USERINIT;
 	header(-file)?      return TOK_HEADER_FILE;
 	tables-file         return TOK_TABLES_FILE;
 	tables-verify   {
@@ -457,7 +476,7 @@ M4QEND      "]""]"
                     }
 
 
-	\"[^"\n]*\"	{
+	"\""[^""\n]*"\""	{
 			if(yyleng-1 < MAXLINE)
         		 {
 			strncpy( nmstr, yytext + 1, sizeof(nmstr) );
@@ -506,7 +525,7 @@ M4QEND      "]""]"
 	<<EOF>>		{
 			mark_prolog();
 			sectnum = 0;
-			yyterminate(); /* to stop the parser */
+			return YY_NULL; /* to stop the parser */
 			}
 }
 
@@ -527,10 +546,10 @@ M4QEND      "]""]"
                         return '<';
                     }
 	^{OPTWS}"^"	return '^';
-	\"		BEGIN(QUOTE); return '"';
+	"\""		BEGIN(QUOTE); return '"';
 	"{"/[[:digit:]]	{
 			BEGIN(NUM);
-			if ( lex_compat || posix_compat )
+			if ( ctrl.lex_compat || ctrl.posix_compat )
 				return BEGIN_REPEAT_POSIX;
 			else
 				return BEGIN_REPEAT_FLEX;
@@ -626,8 +645,7 @@ M4QEND      "]""]"
 
 	^"%%".*		{
 			sectnum = 3;
-			BEGIN(no_section3_escape ? SECT3_NOESCAPE : SECT3);
-			outn("/* Begin user sect3 */");
+			BEGIN(ctrl.no_section3_escape ? SECT3_NOESCAPE : SECT3);
 			yyterminate(); /* to stop the parser */
 
 			}
@@ -655,12 +673,7 @@ M4QEND      "]""]"
                    */
                 &&  (cclval = ccllookup( nmstr )) != 0 )
 				{
-				if ( input() != ']' )
-					synerr( _( "bad character class" ) );
-
-				yylval = cclval;
-				++cclreuse;
-				return PREVCCL;
+     				 /* Dead code removed */
 				}
 			else
 				{
@@ -715,7 +728,7 @@ nmstr[yyleng - 2 - end_is_ws] = '\0';  /* chop trailing brace */
                 if (end_is_ws)
                     unput(end_ch);
 
-				if ( lex_compat || nmdefptr[0] == '^' ||
+				if ( ctrl.lex_compat || nmdefptr[0] == '^' ||
 				     (len > 0 && nmdefptr[len - 1] == '$')
                      || (end_is_ws && trlcontxt && !sf_skip_ws()))
 					{ /* don't use ()'s after all */
@@ -745,7 +758,7 @@ nmstr[yyleng - 2 - end_is_ws] = '\0';  /* chop trailing brace */
                 }
 
     "(?#"       {
-                    if (lex_compat || posix_compat){
+                    if (ctrl.lex_compat || ctrl.posix_compat){
                         /* Push back the "?#" and treat it like a normal parens. */
                         yyless(1);
                         sf_push(); 
@@ -756,7 +769,7 @@ nmstr[yyleng - 2 - end_is_ws] = '\0';  /* chop trailing brace */
                 }
     "(?"        {
                     sf_push();
-                    if (lex_compat || posix_compat)
+                    if (ctrl.lex_compat || ctrl.posix_compat)
                         /* Push back the "?" and treat it like a normal parens. */
                         yyless(1);
                     else
@@ -793,8 +806,8 @@ nmstr[yyleng - 2 - end_is_ws] = '\0';  /* chop trailing brace */
 
 
 <QUOTE>{
-	[^"\n]		RETURNCHAR;
-	\"		BEGIN(SECT2); return '"';
+	[^""\n]		RETURNCHAR;
+	"\""		BEGIN(SECT2); return '"';
 
 	{NL}		{
 			synerr( _( "missing quote" ) );
@@ -878,7 +891,7 @@ nmstr[yyleng - 2 - end_is_ws] = '\0';  /* chop trailing brace */
 	","		return ',';
 	"}"		{
 			BEGIN(SECT2);
-			if ( lex_compat || posix_compat )
+			if ( ctrl.lex_compat || ctrl.posix_compat )
 				return END_REPEAT_POSIX;
 			else
 				return END_REPEAT_FLEX;
@@ -906,12 +919,19 @@ nmstr[yyleng - 2 - end_is_ws] = '\0';  /* chop trailing brace */
 
 	<CODEBLOCK,ACTION>{
 		"reject" {
-            ACTION_ECHO;
-            CHECK_REJECT(yytext);
+			ACTION_ECHO;
+			CHECK_REJECT(yytext);
         }
-		"yymore" {
-            ACTION_ECHO;
-            CHECK_YYMORE(yytext);
+		"yyreject()" {
+			add_action("]""]M4_HOOK_REJECT[""[");
+			CHECK_YYREJECT(yytext);
+        }
+		"yymore()" {
+			yymore_used = true;
+			if (ctrl.rewrite)
+				context_call(yytext);
+			else
+				ACTION_ECHO;
         }
 	}
 
@@ -921,7 +941,7 @@ nmstr[yyleng - 2 - end_is_ws] = '\0';  /* chop trailing brace */
 		ACTION_ECHO;
 		if (bracelevel <= 0 || (doing_codeblock && indented_code)) {
             if ( doing_rule_action )
-                add_action( "\tYY_BREAK]""]\n" );
+                add_action( "\t]""]M4_HOOK_STATE_CASE_BREAK\n" );
 
             doing_rule_action = doing_codeblock = false;
             BEGIN(SECT2);
@@ -930,21 +950,44 @@ nmstr[yyleng - 2 - end_is_ws] = '\0';  /* chop trailing brace */
 }
 
 
-	/* Reject and YYmore() are checked for above, in PERCENT_BRACE_ACTION */
+	/* yyreject and yymore() are checked for above, in PERCENT_BRACE_ACTION */
 <ACTION>{
 	"{"		ACTION_ECHO; ++bracelevel;
 	"}"		ACTION_ECHO; --bracelevel;
-	[^[:alpha:]_{}\"'/\n\[\]]+	ACTION_ECHO;
+	yyecho\(\)|yyinput\(\)|yystart\({FUNARGS}\)|yybegin\({FUNARGS}\)|yyunput\({FUNARGS}\)|yypanic\({FUNARGS}\)|yyatbol\(\)|yysetbol\({FUNARGS}\) {
+			if (ctrl.rewrite)
+				context_call(yytext);
+			else
+				ACTION_ECHO;
+	}
+	yyterminate\(\)|yyless\({FUNARGS}\) {
+			add_action("]""]");
+			add_action(yytext);
+			add_action("[""[");
+	}
+	(yyin|yyout|yyextra|yyleng|yytext|yyflexdebug)/[^[:alnum:]_] {
+			if (ctrl.rewrite)
+				context_member(yytext, "M4_PROPERTY_CONTEXT_FORMAT");
+			else
+				ACTION_ECHO;
+	}
+	(yylineno|yycolumn)/[^[:alnum:]_] {
+			if (ctrl.rewrite)
+				context_member(yytext, "M4_PROPERTY_BUFFERSTACK_CONTEXT_FORMAT");
+			else
+				ACTION_ECHO;
+	}
+	[^[:Alpha:]_{}""''/\n\[\]]+	ACTION_ECHO;
         {NAME}		ACTION_ECHO;
-        "'"([^\'\\\n]|\\.)"'" ACTION_ECHO; /* character constant */
+        "'"([^''\\\n]|\\.)"'" ACTION_ECHO; /* character constant */
         "'"             ACTION_ECHO; BEGIN(CHARACTER_CONSTANT);
-	\"		ACTION_ECHO; BEGIN(ACTION_STRING);
+	"\""		ACTION_ECHO; BEGIN(ACTION_STRING);
 	{NL} {
                 ++linenum;
                 ACTION_ECHO;
                 if (bracelevel <= 0) {
                    if ( doing_rule_action )
-                      add_action( "\tYY_BREAK]""]\n" );
+                      add_action( "\t]""]M4_HOOK_STATE_CASE_BREAK\n" );
 
                    doing_rule_action = false;
                    BEGIN(SECT2);
@@ -954,12 +997,12 @@ nmstr[yyleng - 2 - end_is_ws] = '\0';  /* chop trailing brace */
 }
 
 <ACTION_STRING>{
-	[^\[\]\"\\\n]+	ACTION_ECHO;
-	\"		ACTION_ECHO; BEGIN(ACTION);
+	[^\[\]""\\\n]+	ACTION_ECHO;
+	"\""		ACTION_ECHO; BEGIN(ACTION);
 }
 <CHARACTER_CONSTANT>{
-	[^\[\]\'\\\n]+  ACTION_ECHO;
-        \'              ACTION_ECHO; BEGIN(ACTION);
+	[^\[\]''\\\n]+  ACTION_ECHO;
+        "'"             ACTION_ECHO; BEGIN(ACTION);
 }
 <ACTION_STRING,CHARACTER_CONSTANT>{
         (\\\n)*         ACTION_ECHO;
@@ -1046,3 +1089,38 @@ void set_input_file( char *file )
 
 	linenum = 1;
 	}
+
+void context_call(char *txt) {
+	const char *context_arg = skel_property("M4_PROPERTY_CONTEXT_ARG");
+
+	/* if there's no such property, simply pass through */
+	if (context_arg == NULL) {
+		add_action(txt);
+	} else {
+		char buf[BUFSIZ];
+
+		/* otherwise, supply the context string as a final argument */
+		assert(txt[strlen(txt)-1] == ')');
+		strncpy(buf, txt, sizeof(buf));
+		buf[strlen(buf)-1] = '\0';	/* remove trailing ) */
+		add_action(buf);
+		if (txt[strlen(buf)-1] != '(') {
+			add_action(", ");
+		}
+		add_action(context_arg);
+		add_action(")");
+	}
+}
+
+void context_member(char *txt, const char *prop) {
+	const char *context_format = skel_property(prop);
+
+	/* if there's no such property, simply pass through */
+	if (context_format == NULL) {
+		add_action(txt);
+	} else {
+		char buf[128];
+		snprintf(buf, sizeof(buf), context_format, txt);
+		add_action(buf);
+	}
+}

@@ -87,7 +87,7 @@ int yytbl_hdr_init (struct yytbl_hdr *th, const char *version_str,
 
 	th->th_magic = YYTBL_MAGIC;
 	th->th_hsize = (flex_uint32_t) (14 + strlen (version_str) + 1 + strlen (name) + 1);
-	th->th_hsize += yypad64 (th->th_hsize);
+	th->th_hsize += (8 - (th->th_hsize % 8)) % 8; // Pad to 64-bit boundary
 	th->th_ssize = 0;	// Not known at this point.
 	th->th_flags = 0;
 	th->th_version = xstrdup(version_str);
@@ -124,14 +124,14 @@ int yytbl_data_destroy (struct yytbl_data *td)
 /** Write enough padding to bring the file pointer to a 64-bit boundary. */
 static int yytbl_write_pad64 (struct yytbl_writer *wr)
 {
-	int     pad, bwritten = 0;
+	int bwritten = 0;
 
-	pad = yypad64 (wr->total_written);
-	while (pad-- > 0)
+	while (wr->total_written % (8 * sizeof(flex_uint8_t)) > 0) {
 		if (yytbl_write8 (wr, 0) < 0)
 			return -1;
 		else
 			bwritten++;
+	}
 	return bwritten;
 }
 
@@ -160,12 +160,12 @@ int yytbl_hdr_fwrite (struct yytbl_writer *wr, const struct yytbl_hdr *th)
 
 	sz = (int) strlen (th->th_version) + 1;
 	if ((rv = yytbl_writen (wr, th->th_version, sz)) != sz)
-		flex_die (_("th_version writen failed"));
+		flex_die (_("th_version written failed"));
 	bwritten += rv;
 
 	sz = (int) strlen (th->th_name) + 1;
 	if ((rv = yytbl_writen (wr, th->th_name, sz)) != sz)
-		flex_die (_("th_name writen failed"));
+		flex_die (_("th_name written failed"));
 	bwritten += rv;
 
 	/* add padding */

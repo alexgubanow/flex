@@ -1,6 +1,7 @@
 AM_YFLAGS = -d
 AM_CPPFLAGS = -DLOCALEDIR=\"$(localedir)\"
 LIBS = @LIBS@
+pkgconfigdir = @pkgconfigdir@
 
 m4 = @M4@
 
@@ -11,6 +12,7 @@ endif
 
 if ENABLE_LIBFL
 lib_LTLIBRARIES = libfl.la
+pkgconfig_DATA = libfl.pc
 endif
 libfl_la_SOURCES = \
 	libmain.c \
@@ -56,6 +58,7 @@ COMMON_SOURCES = \
 	filter.c \
 	flexdef.h \
 	flexint.h \
+	flexint_shared.h \
 	gen.c \
 	main.c \
 	misc.c \
@@ -67,7 +70,7 @@ COMMON_SOURCES = \
 	scanflags.c \
 	scanopt.c \
 	scanopt.h \
-	skel.c \
+	skeletons.c \
 	sym.c \
 	tables.c \
 	tables.h \
@@ -79,21 +82,43 @@ COMMON_SOURCES = \
 
 LDADD = $(LIBOBJS) @LIBINTL@
 
+$(LIBOBJS): $(LIBOBJDIR)$(am__dirstamp)
+
 include_HEADERS = \
 	FlexLexer.h
 
 EXTRA_DIST = \
-	flex.skl \
+	c99-flex.skl \
+	cpp-flex.skl \
+	go-flex.skl \
 	mkskel.sh \
-	gettext.h
+	gettext.h \
+	chkskel.sh
 
 CLEANFILES = stage1scan.c stage1flex$(EXEEXT)
 
-MAINTAINERCLEANFILES = skel.c
+BUILT_SOURCES = \
+	cpp-flex.h \
+	c99-flex.h \
+	go-flex.h
 
-skel.c: flex.skl mkskel.sh flexint.h tables_shared.h tables_shared.c
-	$(SHELL) $(srcdir)/mkskel.sh $(srcdir) $(m4) $(VERSION) > $@.tmp
-	mv $@.tmp $@
+clean-local:
+	rm -f $(BUILT_SOURCES)
+
+cpp-flex.h: cpp-flex.skl mkskel.sh flexint_shared.h tables_shared.h tables_shared.c
+	$(SHELL) $(srcdir)/mkskel.sh cpp $(srcdir) $(m4) $(VERSION) > $@.tmp
+	$(SHELL) $(srcdir)/chkskel.sh $@.tmp
+	mv -f $@.tmp $@
+
+c99-flex.h: c99-flex.skl mkskel.sh
+	$(SHELL) $(srcdir)/mkskel.sh c99 $(srcdir) $(m4) $(VERSION) > $@.tmp
+	$(SHELL) $(srcdir)/chkskel.sh $@.tmp
+	mv -f $@.tmp $@
+
+go-flex.h: go-flex.skl mkskel.sh
+	$(SHELL) $(srcdir)/mkskel.sh go $(srcdir) $(m4) $(VERSION) > $@.tmp
+	$(SHELL) $(srcdir)/chkskel.sh $@.tmp
+	mv -f $@.tmp $@
 
 if ENABLE_BOOTSTRAP
 stage1scan.c: scan.l stage1flex$(EXEEXT)
@@ -104,21 +129,24 @@ stage1scan.c: scan.c
 endif
 
 dist-hook: scan.l flex$(EXEEXT)
+	chmod u+w $(distdir) && \
 	chmod u+w $(distdir)/scan.c && \
 	./flex$(EXEEXT) -o scan.c $< && \
-	mv scan.c $(distdir)
+	mv -f scan.c $(distdir)
 
-# make needs to be told to make parse.h so that parallelized runs will
+# make needs to be told to make inclusions so that parallelized runs will
 # not fail.
 
-stage1flex-main.$(OBJEXT): parse.h
-flex-main.$(OBJEXT): parse.h
+SKELINCLUDES := $(subst skl,h,$(wildcard *.skl))
 
-stage1flex-yylex.$(OBJEXT): parse.h
-flex-yylex.$(OBJEXT): parse.h
+stage1flex-main.$(OBJEXT): parse.h $(SKELINCLUDES)
+flex-main.$(OBJEXT): parse.h $(SKELINCLUDES)
 
-stage1flex-scan.$(OBJEXT): parse.h
-flex-stage1scan.$(OBJEXT): parse.h
+stage1flex-yylex.$(OBJEXT): parse.h $(SKELINCLUDES)
+flex-yylex.$(OBJEXT): parse.h $(SKELINCLUDES)
+
+stage1flex-scan.$(OBJEXT): parse.h $(SKELINCLUDES)
+flex-stage1scan.$(OBJEXT): parse.h $(SKELINCLUDES)
 
 # Run GNU indent on sources. Don't run this unless all the sources compile cleanly.
 #

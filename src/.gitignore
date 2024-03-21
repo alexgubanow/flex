@@ -1,12 +1,18 @@
 *.la
 *.lo
 *.o
+*-flex.h
 config.h
 config.h.in
 flex
+libfl.pc
 parse.c
 parse.h
 scan.c
-skel.c
 stage1scan.[cl]
 stage1flex
+
+# for MSWindows
+
+*.obj
+*.exe
