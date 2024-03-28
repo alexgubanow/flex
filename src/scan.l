@@ -95,7 +95,7 @@ extern const char *escaped_qstart, *escaped_qend;
 #define START_CODEBLOCK(x) do { \
     /* Emit the needed line directive... */\
     if (indented_code == false) { \
-        linenum++; \
+        if (!x) linenum++; \
         line_directive_out(NULL, infilename, linenum);	\
     } \
     add_action(M4QSTART); \
@@ -673,12 +673,7 @@ void context_member(char *, const char *);
                    */
                 &&  (cclval = ccllookup( nmstr )) != 0 )
 				{
-				if ( yyinput() != ']' )
-					synerr( _( "bad character class" ) );
-
-				yylval = cclval;
-				++cclreuse;
-				return PREVCCL;
+     				 /* Dead code removed */
 				}
 			else
 				{
